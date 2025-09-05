@@ -91,8 +91,8 @@ pcl::SampleConsensusModelCylinder<PointT, PointNT>::computeModelCoefficients (
   // Use 3D maps for points and normals
   const auto p1 = (*input_)[samples[0]].getVector3fMap();
   const auto p2 = (*input_)[samples[1]].getVector3fMap();
-  const auto n1 = (*normals_)[samples[0]].getNormalVector3fMap();
-  const auto n2 = (*normals_)[samples[1]].getNormalVector3fMap();
+  const auto n1 = (*normals_)[samples[0]].getNormalVector3fMap().normalized();
+  const auto n2 = (*normals_)[samples[1]].getNormalVector3fMap().normalized();
 
   // Compute closest points on the two (almost) parallel lines defined by (p1 + n1 + s*n1) and (p2 + t*n2)
   const Eigen::Vector3f w = n1 + p1 - p2;

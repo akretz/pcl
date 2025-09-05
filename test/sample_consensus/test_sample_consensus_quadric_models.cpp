@@ -428,46 +428,26 @@ TEST(SampleConsensusModelCylinder, RANSAC)
   cloud[18].getVector3fMap() << -0.702003f, 1.242707f, 0.899954f;
   cloud[19].getVector3fMap() << -0.289916f, 1.246296f, 0.950075f;
 
-  normals[0].getNormalVector3fMap()
-      << Eigen::Vector3f(0.000098f, 1.000098f, 0.000008f).normalized();
-  normals[1].getNormalVector3fMap()
-      << Eigen::Vector3f(-0.750891f, 0.660413f, 0.000104f).normalized();
-  normals[2].getNormalVector3fMap()
-      << Eigen::Vector3f(-0.991765f, -0.127949f, -0.000154f).normalized();
-  normals[3].getNormalVector3fMap()
-      << Eigen::Vector3f(-0.558918f, -0.829439f, -0.000039f).normalized();
-  normals[4].getNormalVector3fMap()
-      << Eigen::Vector3f(0.253627f, -0.967447f, -0.000041f).normalized();
-  normals[5].getNormalVector3fMap()
-      << Eigen::Vector3f(0.894105f, -0.447965f, 0.000101f).normalized();
-  normals[6].getNormalVector3fMap()
-      << Eigen::Vector3f(0.926852f, 0.375543f, -0.000161f).normalized();
-  normals[7].getNormalVector3fMap()
-      << Eigen::Vector3f(0.329948f, 0.943941f, 0.000001f).normalized();
-  normals[8].getNormalVector3fMap()
-      << Eigen::Vector3f(-0.490966f, 0.871203f, 0.000072f).normalized();
-  normals[9].getNormalVector3fMap()
-      << Eigen::Vector3f(-0.978507f, 0.206425f, -0.000017f).normalized();
-  normals[10].getNormalVector3fMap()
-      << Eigen::Vector3f(-0.801227f, -0.598534f, 0.000126f).normalized();
-  normals[11].getNormalVector3fMap()
-      << Eigen::Vector3f(-0.079447f, -0.996697f, 0.000079f).normalized();
-  normals[12].getNormalVector3fMap()
-      << Eigen::Vector3f(0.696154f, -0.717889f, -0.000017f).normalized();
-  normals[13].getNormalVector3fMap()
-      << Eigen::Vector3f(0.998685f, 0.048502f, -0.000118f).normalized();
-  normals[14].getNormalVector3fMap()
-      << Eigen::Vector3f(0.622933f, 0.782133f, -0.000146f).normalized();
-  normals[15].getNormalVector3fMap()
-      << Eigen::Vector3f(-0.175948f, 0.984480f, -0.000044f).normalized();
-  normals[16].getNormalVector3fMap()
-      << Eigen::Vector3f(-0.855476f, 0.517824f, 0.000008f).normalized();
-  normals[17].getNormalVector3fMap()
-      << Eigen::Vector3f(-0.953769f, -0.300571f, -0.000030f).normalized();
-  normals[18].getNormalVector3fMap()
-      << Eigen::Vector3f(-0.404035f, -0.914700f, -0.000046f).normalized();
-  normals[19].getNormalVector3fMap()
-      << Eigen::Vector3f(0.420154f, -0.907445f, 0.000075f).normalized();
+  normals[0].getNormalVector3fMap() << 0.000098f, 1.000098f, 0.000008f;
+  normals[1].getNormalVector3fMap() << -0.750891f, 0.660413f, 0.000104f;
+  normals[2].getNormalVector3fMap() << -0.991765f, -0.127949f, -0.000154f;
+  normals[3].getNormalVector3fMap() << -0.558918f, -0.829439f, -0.000039f;
+  normals[4].getNormalVector3fMap() << 0.253627f, -0.967447f, -0.000041f;
+  normals[5].getNormalVector3fMap() << 0.894105f, -0.447965f, 0.000101f;
+  normals[6].getNormalVector3fMap() << 0.926852f, 0.375543f, -0.000161f;
+  normals[7].getNormalVector3fMap() << 0.329948f, 0.943941f, 0.000001f;
+  normals[8].getNormalVector3fMap() << -0.490966f, 0.871203f, 0.000072f;
+  normals[9].getNormalVector3fMap() << -0.978507f, 0.206425f, -0.000017f;
+  normals[10].getNormalVector3fMap() << -0.801227f, -0.598534f, 0.000126f;
+  normals[11].getNormalVector3fMap() << -0.079447f, -0.996697f, 0.000079f;
+  normals[12].getNormalVector3fMap() << 0.696154f, -0.717889f, -0.000017f;
+  normals[13].getNormalVector3fMap() << 0.998685f, 0.048502f, -0.000118f;
+  normals[14].getNormalVector3fMap() << 0.622933f, 0.782133f, -0.000146f;
+  normals[15].getNormalVector3fMap() << -0.175948f, 0.984480f, -0.000044f;
+  normals[16].getNormalVector3fMap() << -0.855476f, 0.517824f, 0.000008f;
+  normals[17].getNormalVector3fMap() << -0.953769f, -0.300571f, -0.000030f;
+  normals[18].getNormalVector3fMap() << -0.404035f, -0.914700f, -0.000046f;
+  normals[19].getNormalVector3fMap() << 0.420154f, -0.907445f, 0.000075f;
 
   // Create a shared cylinder model pointer directly
   SampleConsensusModelCylinderPtr model(
