@@ -88,48 +88,47 @@ pcl::SampleConsensusModelCylinder<PointT, PointNT>::computeModelCoefficients (
     return (false);
   }
 
-  Eigen::Vector4f p1 ((*input_)[samples[0]].x, (*input_)[samples[0]].y, (*input_)[samples[0]].z, 0.0f);
-  Eigen::Vector4f p2 ((*input_)[samples[1]].x, (*input_)[samples[1]].y, (*input_)[samples[1]].z, 0.0f);
+  // Use 3D maps for points and normals
+  const auto p1 = (*input_)[samples[0]].getVector3fMap();
+  const auto p2 = (*input_)[samples[1]].getVector3fMap();
+  const auto n1 = (*normals_)[samples[0]].getNormalVector3fMap().normalized();
+  const auto n2 = (*normals_)[samples[1]].getNormalVector3fMap().normalized();
 
-  Eigen::Vector4f n1 ((*normals_)[samples[0]].normal[0], (*normals_)[samples[0]].normal[1], (*normals_)[samples[0]].normal[2], 0.0f);
-  Eigen::Vector4f n2 ((*normals_)[samples[1]].normal[0], (*normals_)[samples[1]].normal[1], (*normals_)[samples[1]].normal[2], 0.0f);
-  Eigen::Vector4f w = n1 + p1 - p2;
-
-  float a = n1.dot (n1);
-  float b = n1.dot (n2);
-  float c = n2.dot (n2);
-  float d = n1.dot (w);
-  float e = n2.dot (w);
-  float denominator = a*c - b*b;
+  // Compute closest points on the two (almost) parallel lines defined by (p1 + n1 + s*n1) and (p2 + t*n2)
+  const Eigen::Vector3f w = n1 + p1 - p2;
+  const float b = n1.dot (n2);
+  const float d = n1.dot (w);
+  const float e = n2.dot (w);
+  const float denominator = 1.0f - b * b; // assumes unit normals; consistent with original implementation
   float sc, tc;
-  // Compute the line parameters of the two closest points
-  if (denominator < 1e-8)          // The lines are almost parallel
+  if (denominator < 1e-8f) // The lines are almost parallel
   {
     sc = 0.0f;
-    tc = (b > c ? d / b : e / c);  // Use the largest denominator
+    tc = (b > 1.0f ? d / b : e); // Use the largest denominator (matches original logic)
   }
   else
   {
-    sc = (b*e - c*d) / denominator;
-    tc = (a*e - b*d) / denominator;
+    sc = (b * e - d) / denominator;
+    tc = (e - b * d) / denominator;
   }
 
-  // point_on_axis, axis_direction
-  Eigen::Vector4f line_pt  = p1 + n1 + sc * n1;
-  Eigen::Vector4f line_dir = p2 + tc * n2 - line_pt;
-  line_dir.normalize ();
+  // point_on_axis and axis_direction
+  const Eigen::Vector3f line_pt3 = p1 + n1 + sc * n1;
+  const Eigen::Vector3f line_dir3 = (p2 + tc * n2 - line_pt3).normalized();
 
   model_coefficients.resize (model_size_);
-  // model_coefficients.template head<3> ()    = line_pt.template head<3> ();
-  model_coefficients[0] = line_pt[0];
-  model_coefficients[1] = line_pt[1];
-  model_coefficients[2] = line_pt[2];
-  // model_coefficients.template segment<3> (3) = line_dir.template head<3> ();
-  model_coefficients[3] = line_dir[0];
-  model_coefficients[4] = line_dir[1];
-  model_coefficients[5] = line_dir[2];
-  // cylinder radius
-  model_coefficients[6] = static_cast<float> (sqrt (pcl::sqrPointToLineDistance (p1, line_pt, line_dir)));
+  model_coefficients[0] = line_pt3[0];
+  model_coefficients[1] = line_pt3[1];
+  model_coefficients[2] = line_pt3[2];
+  model_coefficients[3] = line_dir3[0];
+  model_coefficients[4] = line_dir3[1];
+  model_coefficients[5] = line_dir3[2];
+
+  // cylinder radius: distance from p1 to the axis
+  const Eigen::Vector3f v = p1 - line_pt3;
+  const float vdotd = v.dot(line_dir3);
+  const float radius = (v - vdotd * line_dir3).norm();
+  model_coefficients[6] = radius;
 
   if (model_coefficients[6] > radius_max_ || model_coefficients[6] < radius_min_)
     return (false);
@@ -154,32 +153,50 @@ pcl::SampleConsensusModelCylinder<PointT, PointNT>::getDistancesToModel (
 
   distances.resize (indices_->size ());
 
-  Eigen::Vector4f line_pt  (model_coefficients[0], model_coefficients[1], model_coefficients[2], 0.0f);
-  Eigen::Vector4f line_dir (model_coefficients[3], model_coefficients[4], model_coefficients[5], 0.0f);
-  float ptdotdir = line_pt.dot (line_dir);
-  float dirdotdir = 1.0f / line_dir.dot (line_dir);
-  // Iterate through the 3d points and calculate the distances from them to the sphere
+  // Work with 3D parts to avoid any interaction with the homogeneous component
+  const Eigen::Vector3f line_pt (model_coefficients[0], model_coefficients[1], model_coefficients[2]);
+  const Eigen::Vector3f line_dir_raw (model_coefficients[3], model_coefficients[4], model_coefficients[5]);
+  Eigen::Vector3f line_dir = line_dir_raw;
+  const float dir_norm = line_dir.norm();
+  if (dir_norm > 0.0f)
+    line_dir /= dir_norm;
+
+  const double radius = static_cast<double>(model_coefficients[6]);
+  const double ndw = static_cast<double>(normal_distance_weight_);
+  const double one_minus_weight = 1.0 - ndw;
+
+  // Iterate through the 3d points and calculate the distances from them to the cylinder
   for (std::size_t i = 0; i < indices_->size (); ++i)
   {
-    // Approximate the distance from the point to the cylinder as the difference between
-    // dist(point,cylinder_axis) and cylinder radius
-    // @note need to revise this.
-    Eigen::Vector4f pt ((*input_)[(*indices_)[i]].x, (*input_)[(*indices_)[i]].y, (*input_)[(*indices_)[i]].z, 0.0f);
+    // Vector from a point on the axis to the query point
+    const Eigen::Vector3f pt = (*input_)[(*indices_)[i]].getVector3fMap();
+    const Eigen::Vector3f v = pt - line_pt;
 
-    const double weighted_euclid_dist = (1.0 - normal_distance_weight_) * std::abs (pointToLineDistance (pt, model_coefficients) - model_coefficients[6]);
+    // Decompose v into parallel and perpendicular components wrt the axis (d is unit)
+    const float vdotd = v.dot(line_dir);
+    const Eigen::Vector3f v_perp = v - vdotd * line_dir; // perpendicular from axis to point
 
-    // Calculate the point's projection on the cylinder axis
-    float k = (pt.dot (line_dir) - ptdotdir) * dirdotdir;
-    Eigen::Vector4f pt_proj = line_pt + k * line_dir;
-    Eigen::Vector4f dir = pt - pt_proj;
-    dir.normalize ();
+    // Euclidean term: distance from axis minus cylinder radius
+    const double radial = static_cast<double>(v_perp.norm());
+    const double weighted_euclid_dist = one_minus_weight * std::abs(radial - radius);
 
-    // Calculate the angular distance between the point normal and the (dir=pt_proj->pt) vector
-    Eigen::Vector4f n  ((*normals_)[(*indices_)[i]].normal[0], (*normals_)[(*indices_)[i]].normal[1], (*normals_)[(*indices_)[i]].normal[2], 0.0f);
-    double d_normal = std::abs (getAngle3D (n, dir));
-    d_normal = (std::min) (d_normal, M_PI - d_normal);
+    // Angular term: angle between point normal and direction from axis to point
+    double d_normal_term = 0.0;
+    if (ndw > 0.0)
+    {
+      // Guard against zero perpendicular (undefined direction)
+      const float vperp_sq = v_perp.squaredNorm();
+      if (vperp_sq > std::numeric_limits<float>::epsilon())
+      {
+        const Eigen::Vector3f n3 = (*normals_)[(*indices_)[i]].getNormalVector3fMap();
+        double d_normal = std::abs (getAngle3D (n3, v_perp));
+        d_normal = (std::min) (d_normal, M_PI - d_normal);
+        d_normal_term = ndw * d_normal;
+      }
+      // else: leave d_normal_term = 0
+    }
 
-    distances[i] = std::abs (normal_distance_weight_ * d_normal + weighted_euclid_dist);
+    distances[i] = std::abs (d_normal_term + weighted_euclid_dist);
   }
 }
 
@@ -200,36 +217,71 @@ pcl::SampleConsensusModelCylinder<PointT, PointNT>::selectWithinDistance (
   inliers.reserve (indices_->size ());
   error_sqr_dists_.reserve (indices_->size ());
 
-  Eigen::Vector4f line_pt  (model_coefficients[0], model_coefficients[1], model_coefficients[2], 0.0f);
-  Eigen::Vector4f line_dir (model_coefficients[3], model_coefficients[4], model_coefficients[5], 0.0f);
-  float ptdotdir = line_pt.dot (line_dir);
-  float dirdotdir = 1.0f / line_dir.dot (line_dir);
-  // Iterate through the 3d points and calculate the distances from them to the sphere
+  // Extract axis point and direction (3D)
+  const Eigen::Vector3f line_pt (model_coefficients[0], model_coefficients[1], model_coefficients[2]);
+  const Eigen::Vector3f line_dir_raw(model_coefficients[3], model_coefficients[4], model_coefficients[5]);
+  // Normalize direction defensively for correct projection math
+  Eigen::Vector3f line_dir = line_dir_raw;
+  const float dir_norm = line_dir.norm();
+  if (dir_norm > 0.0f)
+    line_dir /= dir_norm;
+
+  const double radius = static_cast<double>(model_coefficients[6]);
+  const double ndw = static_cast<double>(normal_distance_weight_);
+  const double one_minus_weight = 1.0 - ndw;
+  const bool use_euclid = one_minus_weight > 0.0;
+  const double euclid_thresh = use_euclid ? (threshold / one_minus_weight) : 0.0;
+  const double rmin_sq = use_euclid ? std::max(0.0, (radius - euclid_thresh)) * std::max(0.0, (radius - euclid_thresh)) : 0.0;
+  const double rmax_sq = use_euclid ? (radius + euclid_thresh) * (radius + euclid_thresh) : 0.0;
+
+  // Iterate through the 3d points and calculate the distances from them to the cylinder
   for (std::size_t i = 0; i < indices_->size (); ++i)
   {
-    // Approximate the distance from the point to the cylinder as the difference between
-    // dist(point,cylinder_axis) and cylinder radius
-    Eigen::Vector4f pt ((*input_)[(*indices_)[i]].x, (*input_)[(*indices_)[i]].y, (*input_)[(*indices_)[i]].z, 0.0f);
-    const double weighted_euclid_dist = (1.0 - normal_distance_weight_) * std::abs (pointToLineDistance (pt, model_coefficients) - model_coefficients[6]);
-    if (weighted_euclid_dist > threshold) // Early termination: cannot be an inlier
-      continue;
+    const auto idx = (*indices_)[i];
 
-    // Calculate the point's projection on the cylinder axis
-    float k = (pt.dot (line_dir) - ptdotdir) * dirdotdir;
-    Eigen::Vector4f pt_proj = line_pt + k * line_dir;
-    Eigen::Vector4f dir = pt - pt_proj;
-    dir.normalize ();
+    // Vector from a point on the axis to the query point
+    const Eigen::Vector3f pt = (*input_)[idx].getVector3fMap();
+    const Eigen::Vector3f v = pt - line_pt;
 
-    // Calculate the angular distance between the point normal and the (dir=pt_proj->pt) vector
-    Eigen::Vector4f n  ((*normals_)[(*indices_)[i]].normal[0], (*normals_)[(*indices_)[i]].normal[1], (*normals_)[(*indices_)[i]].normal[2], 0.0f);
-    double d_normal = std::abs (getAngle3D (n, dir));
-    d_normal = (std::min) (d_normal, M_PI - d_normal);
+    // Compute perpendicular from axis to point: v_perp = v - (v·d) d (d is unit)
+    const float vdotd = v.dot(line_dir);
+    const Eigen::Vector3f v_perp = v - vdotd * line_dir;
 
-    double distance = std::abs (normal_distance_weight_ * d_normal + weighted_euclid_dist);
+    // Early-out using squared bounds to avoid sqrt when possible
+    double weighted_euclid_dist = 0.0;
+    if (use_euclid)
+    {
+      const double radial_sq = static_cast<double>(v_perp.squaredNorm());
+      if (radial_sq < rmin_sq || radial_sq > rmax_sq)
+        continue;
+      // Survived: compute exact Euclidean term only now
+      const double radial = std::sqrt(radial_sq);
+      weighted_euclid_dist = one_minus_weight * std::abs(radial - radius);
+      if (weighted_euclid_dist > threshold) // Defensive check
+        continue;
+    }
+
+    // Angular term (only if needed)
+    double d_normal_term = 0.0;
+    if (ndw > 0.0)
+    {
+      const float vperp_sq = v_perp.squaredNorm();
+      if (vperp_sq > std::numeric_limits<float>::epsilon())
+      {
+        // Use 3D normals and vectors for angle computation
+        const Eigen::Vector3f n3 = (*normals_)[idx].getNormalVector3fMap();
+        double d_normal = std::abs(getAngle3D(n3, v_perp));
+        d_normal = (std::min) (d_normal, M_PI - d_normal);
+        d_normal_term = ndw * d_normal;
+      }
+      // else: leave d_normal_term = 0
+    }
+
+    const double distance = std::abs (d_normal_term + weighted_euclid_dist);
     if (distance < threshold)
     {
       // Returns the indices of the points whose distances are smaller than the threshold
-      inliers.push_back ((*indices_)[i]);
+      inliers.push_back (idx);
       error_sqr_dists_.push_back (distance);
     }
   }
@@ -246,32 +298,65 @@ pcl::SampleConsensusModelCylinder<PointT, PointNT>::countWithinDistance (
 
   std::size_t nr_p = 0;
 
-  Eigen::Vector4f line_pt  (model_coefficients[0], model_coefficients[1], model_coefficients[2], 0);
-  Eigen::Vector4f line_dir (model_coefficients[3], model_coefficients[4], model_coefficients[5], 0);
-  float ptdotdir = line_pt.dot (line_dir);
-  float dirdotdir = 1.0f / line_dir.dot (line_dir);
-  // Iterate through the 3d points and calculate the distances from them to the sphere
+  // Use 3D vectors for performance
+  const Eigen::Vector3f line_pt (model_coefficients[0], model_coefficients[1], model_coefficients[2]);
+  const Eigen::Vector3f line_dir_raw(model_coefficients[3], model_coefficients[4], model_coefficients[5]);
+  // Normalize direction defensively for correct projection math
+  Eigen::Vector3f line_dir = line_dir_raw;
+  const float dir_norm = line_dir.norm();
+  if (dir_norm > 0.0f)
+    line_dir /= dir_norm;
+
+  const double radius = static_cast<double>(model_coefficients[6]);
+  const double ndw = static_cast<double>(normal_distance_weight_);
+  const double one_minus_weight = 1.0 - ndw;
+  const bool use_euclid = one_minus_weight > 0.0;
+  const double euclid_thresh = use_euclid ? (threshold / one_minus_weight) : 0.0;
+  const double rmin_sq = use_euclid ? std::max(0.0, (radius - euclid_thresh)) * std::max(0.0, (radius - euclid_thresh)) : 0.0;
+  const double rmax_sq = use_euclid ? (radius + euclid_thresh) * (radius + euclid_thresh) : 0.0;
+
+  // Iterate through the 3d points and calculate the distances from them to the cylinder
   for (std::size_t i = 0; i < indices_->size (); ++i)
   {
-    // Approximate the distance from the point to the cylinder as the difference between
-    // dist(point,cylinder_axis) and cylinder radius
-    Eigen::Vector4f pt ((*input_)[(*indices_)[i]].x, (*input_)[(*indices_)[i]].y, (*input_)[(*indices_)[i]].z, 0.0f);
-    const double weighted_euclid_dist = (1.0 - normal_distance_weight_) * std::abs (pointToLineDistance (pt, model_coefficients) - model_coefficients[6]);
-    if (weighted_euclid_dist > threshold) // Early termination: cannot be an inlier
-      continue;
+    const auto idx = (*indices_)[i];
 
-    // Calculate the point's projection on the cylinder axis
-    float k = (pt.dot (line_dir) - ptdotdir) * dirdotdir;
-    Eigen::Vector4f pt_proj = line_pt + k * line_dir;
-    Eigen::Vector4f dir = pt - pt_proj;
-    dir.normalize ();
+    // Vector from a point on the axis to the query point
+    const Eigen::Vector3f pt = (*input_)[idx].getVector3fMap();
+    const Eigen::Vector3f v = pt - line_pt;
 
-    // Calculate the angular distance between the point normal and the (dir=pt_proj->pt) vector
-    Eigen::Vector4f n  ((*normals_)[(*indices_)[i]].normal[0], (*normals_)[(*indices_)[i]].normal[1], (*normals_)[(*indices_)[i]].normal[2], 0.0f);
-    double d_normal = std::abs (getAngle3D (n, dir));
-    d_normal = (std::min) (d_normal, M_PI - d_normal);
+    // Perpendicular component to axis (d is unit)
+    const float vdotd = v.dot(line_dir);
+    const Eigen::Vector3f v_perp = v - vdotd * line_dir;
 
-    if (std::abs (normal_distance_weight_ * d_normal + weighted_euclid_dist) < threshold)
+    // Early-out using squared bounds to avoid sqrt when possible
+    double weighted_euclid_dist = 0.0;
+    if (use_euclid)
+    {
+      const double radial_sq = static_cast<double>(v_perp.squaredNorm());
+      if (radial_sq < rmin_sq || radial_sq > rmax_sq)
+        continue;
+      const double radial = std::sqrt(radial_sq);
+      weighted_euclid_dist = one_minus_weight * std::abs(radial - radius);
+      if (weighted_euclid_dist > threshold)
+        continue;
+    }
+
+    // Angular term (if enabled)
+    double d_normal_term = 0.0;
+    if (ndw > 0.0)
+    {
+      const float vperp_sq = v_perp.squaredNorm();
+      if (vperp_sq > std::numeric_limits<float>::epsilon())
+      {
+        const Eigen::Vector3f n3 = (*normals_)[idx].getNormalVector3fMap();
+        double d_normal = std::abs(getAngle3D(n3, v_perp));
+        d_normal = (std::min) (d_normal, M_PI - d_normal);
+        d_normal_term = ndw * d_normal;
+      }
+      // else: leave d_normal_term = 0
+    }
+
+    if (std::abs (d_normal_term + weighted_euclid_dist) < threshold)
       nr_p++;
   }
   return (nr_p);
@@ -323,6 +408,36 @@ pcl::SampleConsensusModelCylinder<PointT, PointNT>::optimizeModelCoefficients (
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 template <typename PointT, typename PointNT> void
+pcl::SampleConsensusModelCylinder<PointT, PointNT>::projectPointToCylinder (
+      const Eigen::Vector4f &pt, const Eigen::VectorXf &model_coefficients, Eigen::Vector4f &pt_proj) const
+{
+  // Use 3D math for projection
+  const Eigen::Vector3f line_pt (model_coefficients[0], model_coefficients[1], model_coefficients[2]);
+  const Eigen::Vector3f line_dir (model_coefficients[3], model_coefficients[4], model_coefficients[5]);
+
+  // Project point onto axis line (not necessarily unit direction)
+  const Eigen::Vector3f p3 (pt[0], pt[1], pt[2]);
+  const Eigen::Vector3f diff = p3 - line_pt;
+  const float dirdotdir = line_dir.dot(line_dir);
+  const float k = dirdotdir > 0.0f ? diff.dot(line_dir) / dirdotdir : 0.0f;
+  Eigen::Vector3f proj = line_pt + k * line_dir;
+
+  // Direction from axis to point on cylinder surface
+  Eigen::Vector3f dir = p3 - proj;
+  const float dir_norm = dir.norm();
+  if (dir_norm > std::numeric_limits<float>::epsilon())
+    dir /= dir_norm;
+
+  proj += dir * model_coefficients[6];
+
+  pt_proj[0] = proj[0];
+  pt_proj[1] = proj[1];
+  pt_proj[2] = proj[2];
+  pt_proj[3] = 0.0f;
+}
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+template <typename PointT, typename PointNT> void
 pcl::SampleConsensusModelCylinder<PointT, PointNT>::projectPoints (
       const Indices &inliers, const Eigen::VectorXf &model_coefficients, PointCloud &projected_points, bool copy_data_fields) const
 {
@@ -336,10 +451,10 @@ pcl::SampleConsensusModelCylinder<PointT, PointNT>::projectPoints (
   projected_points.header = input_->header;
   projected_points.is_dense = input_->is_dense;
 
-  Eigen::Vector4f line_pt  (model_coefficients[0], model_coefficients[1], model_coefficients[2], 0.0f);
-  Eigen::Vector4f line_dir (model_coefficients[3], model_coefficients[4], model_coefficients[5], 0.0f);
-  float ptdotdir = line_pt.dot (line_dir);
-  float dirdotdir = 1.0f / line_dir.dot (line_dir);
+  // Work in 3D
+  const Eigen::Vector3f line_pt (model_coefficients[0], model_coefficients[1], model_coefficients[2]);
+  const Eigen::Vector3f line_dir (model_coefficients[3], model_coefficients[4], model_coefficients[5]);
+  const float inv_dirdotdir = 1.0f / line_dir.dot (line_dir);
 
   // Copy all the data fields from the input cloud to the projected one?
   if (copy_data_fields)
@@ -358,22 +473,24 @@ pcl::SampleConsensusModelCylinder<PointT, PointNT>::projectPoints (
     // Iterate through the 3d points and calculate the distances from them to the cylinder
     for (const auto &inlier : inliers)
     {
-      Eigen::Vector4f p ((*input_)[inlier].x,
-                         (*input_)[inlier].y,
-                         (*input_)[inlier].z,
-                         1);
+      const Eigen::Vector3f p ((*input_)[inlier].x,
+                               (*input_)[inlier].y,
+                               (*input_)[inlier].z);
 
-      float k = (p.dot (line_dir) - ptdotdir) * dirdotdir;
+      const float k = ((p - line_pt).dot (line_dir)) * inv_dirdotdir;
 
-      pcl::Vector4fMap pp = projected_points[inlier].getVector4fMap ();
-      pp.matrix () = line_pt + k * line_dir;
+      Eigen::Vector3f pp3 = line_pt + k * line_dir;
 
-      Eigen::Vector4f dir = p - pp;
-      dir[3] = 0.0f;
-      dir.normalize ();
+      Eigen::Vector3f dir = p - pp3;
+      const float dir_norm = dir.norm();
+      if (dir_norm > std::numeric_limits<float>::epsilon())
+        dir /= dir_norm;
 
       // Calculate the projection of the point onto the cylinder
-      pp += dir * model_coefficients[6];
+      pp3 += dir * model_coefficients[6];
+      projected_points[inlier].x = pp3[0];
+      projected_points[inlier].y = pp3[1];
+      projected_points[inlier].z = pp3[2];
     }
   }
   else
@@ -392,19 +509,23 @@ pcl::SampleConsensusModelCylinder<PointT, PointNT>::projectPoints (
     // Iterate through the 3d points and calculate the distances from them to the cylinder
     for (std::size_t i = 0; i < inliers.size (); ++i)
     {
-      pcl::Vector4fMap pp = projected_points[i].getVector4fMap ();
-      pcl::Vector4fMapConst p = (*input_)[inliers[i]].getVector4fMap ();
+      const Eigen::Vector3f p ((*input_)[inliers[i]].x,
+                               (*input_)[inliers[i]].y,
+                               (*input_)[inliers[i]].z);
 
-      float k = (p.dot (line_dir) - ptdotdir) * dirdotdir;
-      // Calculate the projection of the point on the line
-      pp.matrix () = line_pt + k * line_dir;
+      const float k = ((p - line_pt).dot (line_dir)) * inv_dirdotdir;
+      Eigen::Vector3f pp3 = line_pt + k * line_dir;
 
-      Eigen::Vector4f dir = p - pp;
-      dir[3] = 0.0f;
-      dir.normalize ();
+      Eigen::Vector3f dir = p - pp3;
+      const float dir_norm = dir.norm();
+      if (dir_norm > std::numeric_limits<float>::epsilon())
+        dir /= dir_norm;
 
       // Calculate the projection of the point onto the cylinder
-      pp += dir * model_coefficients[6];
+      pp3 += dir * model_coefficients[6];
+      projected_points[i].x = pp3[0];
+      projected_points[i].y = pp3[1];
+      projected_points[i].z = pp3[2];
     }
   }
 }
@@ -442,24 +563,6 @@ pcl::SampleConsensusModelCylinder<PointT, PointNT>::pointToLineDistance (
   Eigen::Vector4f line_pt  (model_coefficients[0], model_coefficients[1], model_coefficients[2], 0.0f);
   Eigen::Vector4f line_dir (model_coefficients[3], model_coefficients[4], model_coefficients[5], 0.0f);
   return sqrt(pcl::sqrPointToLineDistance (pt, line_pt, line_dir));
-}
-
-//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-template <typename PointT, typename PointNT> void
-pcl::SampleConsensusModelCylinder<PointT, PointNT>::projectPointToCylinder (
-      const Eigen::Vector4f &pt, const Eigen::VectorXf &model_coefficients, Eigen::Vector4f &pt_proj) const
-{
-  Eigen::Vector4f line_pt  (model_coefficients[0], model_coefficients[1], model_coefficients[2], 0.0f);
-  Eigen::Vector4f line_dir (model_coefficients[3], model_coefficients[4], model_coefficients[5], 0.0f);
-
-  float k = (pt.dot (line_dir) - line_pt.dot (line_dir)) / line_dir.dot (line_dir);
-  pt_proj = line_pt + k * line_dir;
-
-  Eigen::Vector4f dir = pt - pt_proj;
-  dir.normalize ();
-
-  // Calculate the projection of the point onto the cylinder
-  pt_proj += dir * model_coefficients[6];
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
